@@ -25,45 +25,64 @@ def init_db():
     return conn
 
 # ==========================================
-# 2. LOGIKA EKSTRAKSI PDF (Otomatisasi)
+# 2. LOGIKA EKSTRAKSI PDF (Regex Lanjutan)
 # ==========================================
 def extract_data_from_pdf(pdf_file):
     extracted_text = ""
-    # Membaca teks dari PDF menggunakan pdfplumber
     with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
-            extracted_text += page.extract_text() + "\n"
+        # Membaca 5 halaman pertama saja agar lebih cepat (info penting biasanya di awal)
+        for page in pdf.pages[:5]:
+            text = page.extract_text()
+            if text:
+                extracted_text += text + "\n"
     
-    # ---------------------------------------------------------
-    # TAHAP INI MEMBUTUHKAN PENYESUAIAN REGEX YANG PRESISI
-    # Format pengumuman IDX bervariasi, ini adalah contoh dasar
-    # ---------------------------------------------------------
-    
-    # Contoh Regex mencari Ticker (Biasanya PT XXX Tbk ("KODE"))
+    # 1. Ekstraksi Ticker
     ticker_match = re.search(r'\("([A-Z]{4})"\)', extracted_text)
     ticker = ticker_match.group(1) if ticker_match else "UNKNOWN"
     
-    # Deteksi Jenis Aksi Korporasi dari judul/isi
+    # 2. Deteksi Jenis Aksi Korporasi
     jenis_aksi = "Lainnya"
-    if "HAK MEMESAN EFEK TERLEBIH DAHULU" in extracted_text.upper() or "HMETD" in extracted_text.upper():
+    if re.search(r'(HAK MEMESAN EFEK TERLEBIH DAHULU|HMETD|RIGHT ISSUE)', extracted_text, re.IGNORECASE):
         jenis_aksi = "Right Issue"
-    elif "TENDER OFFER" in extracted_text.upper() or "PENAWARAN TENDER" in extracted_text.upper():
+    elif re.search(r'(TENDER OFFER|PENAWARAN TENDER)', extracted_text, re.IGNORECASE):
         jenis_aksi = "Tender Offer"
-    elif "TANPA HAK MEMESAN EFEK TERLEBIH DAHULU" in extracted_text.upper() or "PMTHMETD" in extracted_text.upper():
+    elif re.search(r'(TANPA HAK MEMESAN EFEK TERLEBIH DAHULU|PMTHMETD|PRIVATE PLACEMENT)', extracted_text, re.IGNORECASE):
         jenis_aksi = "Private Placement"
-    elif "RAPAT UMUM PEMEGANG SAHAM" in extracted_text.upper() or "RUPS" in extracted_text.upper():
+    elif re.search(r'(RAPAT UMUM PEMEGANG SAHAM|RUPS)', extracted_text, re.IGNORECASE):
         jenis_aksi = "RUPS"
 
-    # Menyusun data hasil ekstraksi
-    data = {
+    # 3. Ekstraksi Rasio (Pola: "Setiap X saham ... berhak atas Y HMETD")
+    rasio = "Tidak Ditemukan"
+    # Regex ini mencari angka setelah kata 'Setiap', mengabaikan kata-kata di tengah, lalu mencari angka setelah 'atas'
+    match_rasio = re.search(r'Setiap\s+(\d+(?:[.,]\d+)?)[^\.]+?berhak\s+atas\s+(\d+(?:[.,]\d+)?)', extracted_text, re.IGNORECASE)
+    if match_rasio:
+        rasio = f"{match_rasio.group(1)} : {match_rasio.group(2)}"
+    else:
+        # Coba pola alternatif: "Rasio X : Y"
+        match_rasio_alt = re.search(r'Rasio.*?(\d+)\s*:\s*(\d+)', extracted_text, re.IGNORECASE)
+        if match_rasio_alt:
+            rasio = f"{match_rasio_alt.group(1)} : {match_rasio_alt.group(2)}"
+
+    # 4. Ekstraksi Tanggal Cum-Date (Pencarian format tanggal di sekitar kata "Cum")
+    tanggal_cum = "Tidak Ditemukan"
+    # Mencari kata 'Cum', lalu mencari pola tanggal (misal: 12 Agustus 2026 atau 12-Agu-2026)
+    match_cum = re.search(r'Cum[^\n\:]*?:\s*([0-9]{1,2}\s+[A-Za-z]+\s+[0-9]{4})', extracted_text, re.IGNORECASE)
+    if match_cum:
+        tanggal_cum = match_cum.group(1)
+    else:
+        # Pola alternatif jika format tabel
+        match_cum_alt = re.search(r'Cum.*?Reguler.*?\n.*?([0-9]{1,2}\s+[A-Za-z]+\s+[0-9]{4})', extracted_text, re.IGNORECASE)
+        if match_cum_alt:
+            tanggal_cum = match_cum_alt.group(1)
+
+    return {
         "ticker": ticker,
         "jenis_aksi": jenis_aksi,
-        "status": "On Going", # Default status saat pertama diupload
-        "tanggal_cum": "Cek Manual", # Perlu Regex spesifik untuk format tanggal IDX
-        "rasio": "Cek Manual", # Perlu Regex spesifik 
+        "status": "Pipeline", # Diubah ke Pipeline sebagai default
+        "tanggal_cum": tanggal_cum.strip() if tanggal_cum != "Tidak Ditemukan" else tanggal_cum,
+        "rasio": rasio,
         "sumber_file": pdf_file.name
     }
-    return data
 
 def insert_to_db(conn, data):
     c = conn.cursor()
@@ -83,40 +102,45 @@ st.title("📊 Equity Notes: Corporate Actions Automator")
 st.write("Sistem otomatis ekstraksi prospektus IDX dan pemantauan aksi korporasi.")
 
 # --- Bagian Upload & Proses PDF ---
-st.header("1. Input & Ekstraksi Dokumen")
-uploaded_file = st.file_uploader("Upload File Pengumuman/Prospektus IDX (PDF)", type="pdf")
+with st.expander("➕ Tambah Data (Upload Prospektus)", expanded=True):
+    uploaded_file = st.file_uploader("Upload File Pengumuman/Prospektus IDX (PDF)", type="pdf")
 
-if uploaded_file is not None:
-    if st.button("Proses Ekstraksi PDF"):
-        with st.spinner("Membaca dokumen dan mengekstrak data..."):
-            # Proses PDF
-            extracted_data = extract_data_from_pdf(uploaded_file)
-            
-            # Simpan ke Database
-            insert_to_db(conn, extracted_data)
-            
-            st.success(f"Data berhasil diekstrak dan disimpan! Ticker terdeteksi: **{extracted_data['ticker']}** ({extracted_data['jenis_aksi']})")
+    if uploaded_file is not None:
+        if st.button("Proses Ekstraksi PDF", type="primary"):
+            with st.spinner("Mengekstrak data menggunakan Regex..."):
+                extracted_data = extract_data_from_pdf(uploaded_file)
+                insert_to_db(conn, extracted_data)
+                
+                st.success(f"Data {extracted_data['ticker']} berhasil ditambahkan ke database!")
+                
+                # Tampilkan preview hasil ekstraksi agar bisa divalidasi langsung
+                st.json(extracted_data)
 
 st.divider()
 
 # --- Bagian Dashboard Utama ---
-st.header("2. Dashboard Aksi Korporasi")
+st.header("Terminal Aksi Korporasi")
 
-# Membaca isi database
 df = pd.read_sql_query("SELECT * FROM corporate_actions", conn)
 
 if not df.empty:
-    # Filter Interaktif
-    aksi_filter = st.multiselect("Filter Jenis Aksi:", options=df['jenis_aksi'].unique(), default=df['jenis_aksi'].unique())
+    col1, col2 = st.columns(2)
+    with col1:
+        aksi_filter = st.multiselect("Filter Jenis Aksi:", options=df['jenis_aksi'].unique(), default=df['jenis_aksi'].unique())
+    with col2:
+        search_ticker = st.text_input("Cari Ticker:")
+
+    # Logika Filter
     df_filtered = df[df['jenis_aksi'].isin(aksi_filter)]
+    if search_ticker:
+        df_filtered = df_filtered[df_filtered['ticker'].str.contains(search_ticker.upper())]
     
-    # Menampilkan Tabel Data
     st.dataframe(
         df_filtered[['ticker', 'jenis_aksi', 'status', 'tanggal_cum', 'rasio', 'sumber_file']], 
         use_container_width=True,
         hide_index=True
     )
 else:
-    st.info("Database masih kosong. Silakan upload dokumen PDF pertama Anda.")
+    st.info("Database masih kosong. Silakan upload dokumen PDF pertama Anda di atas.")
 
 conn.close()
