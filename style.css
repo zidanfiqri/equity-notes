@@ -1,0 +1,37 @@
+body {
+    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+.table {
+    font-size: 0.85rem;
+    white-space: nowrap;
+}
+
+.table-hover tbody tr:hover {
+    background-color: #f1f8ff;
+    cursor: pointer;
+}
+
+.status-ongoing {
+    background-color: #d1e7dd;
+    color: #0f5132;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
+.status-pipeline {
+    background-color: #fff3cd;
+    color: #664d03;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
+.status-postponed {
+    background-color: #f8d7da;
+    color: #842029;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+}
